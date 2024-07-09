@@ -23,8 +23,14 @@ from llama_index.core import SimpleDirectoryReader
 import boto3
 from botocore.exceptions import ClientError
 import logging
+from langchain_community.document_loaders import UnstructuredEmailLoader
+import tempfile
 
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 PROMPT_TEMPLATE = '''
         Given the following text extracted from meeting minutes, generate a list of action items, their associated dates (if any) and the person/entity associated with the action item in JSON format. Each action item should be an object with the following properties:
@@ -46,31 +52,46 @@ app = FastAPI()
 
 @app.get("/")
 async def root():
+    logger.info("Hello, world")
     return {"message": "Hello World"}
 
 @app.get("/get-action-items")
 async def upload(file: UploadFile = File(...)):
-    pdf_content = await file.read()
-    pdf_file = BytesIO(pdf_content)
-    pdf_reader = PdfReader(pdf_file)
-    documents = []
-    for page_num, page in enumerate(pdf_reader.pages):
-        text = page.extract_text()
-        documents.append(Document(page_content=text, metadata={"page": page_num + 1}))
-    
+    # Check file type
+    file_extension = file.filename.split(".")[-1].lower()
+
+    # Load documents
+    if file_extension == "pdf":
+        pdf_content = await file.read()
+        pdf_file = BytesIO(pdf_content)
+        pdf_reader = PdfReader(pdf_file)
+        documents = []
+        for page_num, page in enumerate(pdf_reader.pages):
+            text = page.extract_text()
+            documents.append(Document(page_content=text, metadata={"page": page_num + 1}))
+        # logger.info("PDF file")
+        # logger.info(documents)
+    elif file_extension == "eml":
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".eml") as tmp_file:
+            tmp_file.write(await file.read())
+            tmp_file_path = tmp_file.name
+        loader = UnstructuredEmailLoader(tmp_file_path)
+        documents = loader.load()
+        os.remove(tmp_file_path)
+        # logger.info("EML file")
+        # logger.info(documents)
+
     text = "\n\n".join(doc.page_content for doc in documents)
     prompt_template = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
     prompt = prompt_template.format(context=text)
 
-    logging.info(text)
+    output = ollama.generate(
+        model="mistral",
+        prompt=prompt
+    )
 
-    # output = ollama.generate(
-    #     model="llama3",
-    #     prompt=prompt
-    # )
-
-    return {
-        # "ActionItems": output['response']
-        "response": text
+    response = {
+        "ActionItems": output['response']
     }
 
+    return response
